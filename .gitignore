@@ -1,0 +1,41 @@
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# Local environments and secrets
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+
+# Editors and operating-system metadata
+.idea/
+.vscode/
+.DS_Store
+
+# Downloaded model weights
+ckpts/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+
+# Training and inference artifacts
+workdir/
+sample/
+outputs/
+run_logs/
+wandb/
+*.log
+
+# Legacy root-level generated files
+watered_mesh.obj
+sharped_mesh.npz

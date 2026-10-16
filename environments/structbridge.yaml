@@ -1,0 +1,29 @@
+# Shared environment for preprocessing, diffusion bridge, and normal refinement.
+# Install extensions.txt after creating this environment.
+name: structbridge
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - setuptools=75.8.0
+  - wheel
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu124
+      - torch==2.6.0+cu124
+      - torchvision==0.21.0+cu124
+      - numpy==1.26.4
+      - scipy==1.15.0
+      - omegaconf==2.3.0
+      - einops==0.8.1
+      - timm==1.0.22
+      - trimesh==4.6.4
+      - scikit-image==0.25.2
+      - fpsample==0.3.3
+      - Pillow==11.1.0
+      - opencv-python==4.11.0.86
+      - tqdm==4.67.1
+      - imageio==2.37.2
+      - requests==2.32.3
+      - ninja==1.13.0
+      - pybind11==3.0.1

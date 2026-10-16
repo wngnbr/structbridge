@@ -1,0 +1,10 @@
+# 忽略 Python 缓存和运行生成的垃圾文件
+__pycache__/
+*.py[cod]
+*$py.class
+.DS_Store
+code/api_gemini_gen_img_ours.py
+code/mv_refine_pro.py
+
+# 忽略具体的测试数据集夹和模型输出存放目录（请根据情况修改）
+data/

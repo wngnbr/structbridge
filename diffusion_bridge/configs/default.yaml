@@ -1,0 +1,78 @@
+# Canonical configuration for the released StructBridge checkpoints.
+model:
+  input_channels: 64
+  output_channels: 64
+  width: 1024
+  layers: 32
+  heads: 16
+  init_scale: 1.0
+  drop_path: 0.0
+  qkv_bias: false
+  qkv_fuse: true
+  use_rms_norm: false
+vae:
+  checkpoint: ./ckpts/dora_vae_1_1.ckpt
+  sample_posterior: true
+  model:
+    tokens_per_group: 384
+    use_downsample: true
+    embed_point_feats: false
+    embed_dim: 64
+    point_feats: 3
+    out_dim: 1
+    embed_type: fourier
+    num_freqs: 8
+    include_pi: false
+    heads: 12
+    width: 768
+    num_encoder_layers: 8
+    num_decoder_layers: 16
+    use_ln_post: true
+    init_scale: 0.25
+    qkv_bias: false
+    use_flash: true
+    use_checkpoint: true
+diffusion:
+  noise_schedule: i2sb_cond
+  sigma_data: 0.5
+  sigma_min: 0.0001
+  sigma_max: 1.0
+  beta_d: 2.0
+  beta_min: 0.1
+  beta_max: 1.0
+  cov_xy: 0.0
+data:
+  root: ''
+  category: all
+  category_filter: chair
+  num_workers: 8
+training:
+  experiment: diffusion_bridge
+  workdir: ''
+  seed: 42
+  lr: 0.0001
+  weight_decay: 0.0
+  lr_anneal_steps: 0
+  global_batch_size: 1
+  batch_size: -1
+  microbatch: -1
+  ema_rates: [0.9999]
+  use_fp16: true
+  log_interval: 50
+  save_interval: 5000
+  max_steps: 0
+  save_final: true
+  tracking_mode: offline
+sampling:
+  model_path: ./ckpts/diffusion_bridge_300k.pt
+  output_dir: ''
+  use_fp16: false
+  clip_denoised: false
+  sampler: dbim
+  steps: 30
+  churn_step_ratio: 0.0
+  rho: 7.0
+  seed: 42
+  eta: 0.9
+  order: 1
+  octree_depth: 9

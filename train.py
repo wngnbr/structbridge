@@ -1,164 +1,121 @@
-"""
-Train a diffusion model on images.
-"""
+"""Train the concept-to-real diffusion bridge with a frozen shape VAE."""
 
 import argparse
+from datetime import datetime
+from pathlib import Path
+import random
 
-from ddbm import dist_util, logger
-from datasets import load_data
-from ddbm.resample import create_named_schedule_sampler
-from ddbm.script_util import (
-    model_and_diffusion_defaults,
-    create_model_and_diffusion,
-    sample_defaults,
-    args_to_dict,
-    add_dict_to_argparser,
-    get_workdir,
-)
-from ddbm.train_util import TrainLoop
-
+import numpy as np
+import torch
 import torch.distributed as dist
 
-from pathlib import Path
+from datasets import load_training_data
+from diffusion_bridge.bridge import dist_util, logger
+from diffusion_bridge.bridge.script_util import create_model_and_diffusion
+from diffusion_bridge.bridge.train_util import TrainLoop
+from diffusion_bridge.checkpoints import (
+    TRAINING_FORMAT, bridge_weights, load_bridge_checkpoint, resolve_resume_path,
+    validate_resume_config,
+)
+from diffusion_bridge.config import add_config_arguments, apply_cli, load_config, save_config, str2bool, to_dict
+from diffusion_bridge.vae.model import load_vae
 
-import wandb
 
-from glob import glob
-import os
-from datasets.augment import AugmentPipe
-
-from datetime import datetime
+CLI_MAP = {
+    "data_dir": "data.root", "category": "data.category", "category_filter": "data.category_filter",
+    "num_workers": "data.num_workers", "vae_path": "vae.checkpoint", "workdir": "training.workdir",
+    "exp": "training.experiment", "seed": "training.seed", "lr": "training.lr",
+    "weight_decay": "training.weight_decay", "lr_anneal_steps": "training.lr_anneal_steps",
+    "global_batch_size": "training.global_batch_size", "batch_size": "training.batch_size",
+    "microbatch": "training.microbatch", "use_fp16": "training.use_fp16",
+    "log_interval": "training.log_interval", "save_interval": "training.save_interval",
+    "max_steps": "training.max_steps", "save_final": "training.save_final",
+    "tracking_mode": "training.tracking_mode",
+}
 
 
 def main(args):
-    cate = "all"
-    time_str = datetime.now().strftime("-%m-%d-%H:%M:%S")
-    args.exp = args.exp + f"-{cate}" + time_str
-
-    workdir = get_workdir(args.exp)
-    Path(workdir).mkdir(parents=True, exist_ok=True)
-
+    # Discover checkpoint paths before validating the fully merged architecture.
+    initial = apply_cli(load_config(args.config, validate=False), args, CLI_MAP, validate=False)
+    resume_path = resolve_resume_path(args.resume_checkpoint, initial.training.workdir)
+    source_path = resume_path or args.pretrained_ckpt
+    checkpoint = load_bridge_checkpoint(source_path) if source_path else None
+    embedded = checkpoint.get("config") if checkpoint and checkpoint.get("format") == TRAINING_FORMAT else None
+    inherited = embedded if resume_path else ({key: embedded[key] for key in ("model", "vae", "diffusion")} if embedded else None)
+    config = apply_cli(load_config(args.config, checkpoint_config=inherited, validate=False), args, CLI_MAP)
+    if resume_path:
+        if embedded is None:
+            raise ValueError("This file contains only weights. Use --pretrained_ckpt to initialize a new run")
+        validate_resume_config(embedded, to_dict(config))
+    if not config.data.root:
+        raise ValueError("Set --data_dir or data.root in the experiment configuration")
     dist_util.setup_dist()
-    logger.configure(dir=workdir)
-    if dist.get_rank() == 0:
-        name = args.exp if args.resume_checkpoint == "" else args.exp + "_resume"
-        wandb.init(
-            project="bridge",
-            group=args.exp,
-            name=name,
-            config=vars(args),
-            mode="offline" if not args.debug else "disabled",
-        )
-        logger.log("creating model and diffusion...")
-
-    data_image_size = args.image_size
-
-    # Load target model
-    resume_train_flag = False
-    if args.resume_checkpoint == "":
-        model_ckpts = list(glob(f"{workdir}/*model*[0-9].*"))
-        if len(model_ckpts) > 0:
-            max_ckpt = max(model_ckpts, key=lambda x: int(x.split("model_")[-1].split(".")[0]))
-            if os.path.exists(max_ckpt):
-                args.resume_checkpoint = max_ckpt
-                resume_train_flag = True
-        elif args.pretrained_ckpt is not None:
-            max_ckpt = args.pretrained_ckpt
-            args.resume_checkpoint = max_ckpt
-        if dist.get_rank() == 0 and args.resume_checkpoint != "":
-            logger.log("Resuming from checkpoint: ", max_ckpt)
-
-    model, diffusion = create_model_and_diffusion(**args_to_dict(args, model_and_diffusion_defaults().keys()))
-    model.to(dist_util.dev())
-
-    if dist.get_rank() == 0:
-        wandb.watch(model, log="all")
-    schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion)
-
-    if args.batch_size == -1:
-        batch_size = args.global_batch_size // dist.get_world_size()
-        if args.global_batch_size % dist.get_world_size() != 0:
-            logger.log(f"warning, using smaller global_batch_size of {dist.get_world_size()*batch_size} instead of {args.global_batch_size}")
-    else:
-        batch_size = args.batch_size
-
-    if dist.get_rank() == 0:
-        logger.log("creating data loader...")
-
-    args.dataset = "dora"
-    data, test_data = load_data(
-        data_dir=args.data_dir,
-        dataset=args.dataset,
-        batch_size=batch_size,
-        image_size=cate,
-        num_workers=args.num_workers
-    )
-
-    if args.use_augment:
-        augment = AugmentPipe(p=0.12, xflip=1e8, yflip=1, scale=1, rotate_frac=1, aniso=1, translate_frac=1)
-    else:
-        augment = None
-
-    logger.log("training...")
-    TrainLoop(
-        model=model,
-        diffusion=diffusion,
-        train_data=data,
-        test_data=test_data,
-        batch_size=batch_size,
-        microbatch=-1 if args.microbatch >= batch_size else args.microbatch,
-        lr=args.lr,
-        ema_rate=args.ema_rate,
-        log_interval=args.log_interval,
-        test_interval=args.test_interval,
-        save_interval=args.save_interval,
-        save_interval_for_preemption=args.save_interval_for_preemption,
-        resume_checkpoint=args.resume_checkpoint,
-        workdir=workdir,
-        use_fp16=args.use_fp16,
-        fp16_scale_growth=args.fp16_scale_growth,
-        schedule_sampler=schedule_sampler,
-        weight_decay=args.weight_decay,
-        lr_anneal_steps=args.lr_anneal_steps,
-        augment_pipe=augment,
-        train_mode=args.train_mode,
-        resume_train_flag=resume_train_flag,
-        **sample_defaults(),
-    ).run_loop()
+    tracking = False
+    try:
+        rank, world_size = dist.get_rank(), dist.get_world_size()
+        seed = config.training.seed + rank
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        batch_size = config.training.batch_size
+        if batch_size == -1:
+            if config.training.global_batch_size % world_size:
+                raise ValueError("global_batch_size must be divisible by the process count")
+            batch_size = config.training.global_batch_size // world_size
+        if batch_size <= 0:
+            raise ValueError("Each rank must have a positive batch size")
+        workdir = config.training.workdir
+        if not workdir and resume_path:
+            workdir = str(resume_path.parent)
+        if not workdir and rank == 0:
+            timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+            workdir = str(Path("workdir") / f"{config.training.experiment}-{timestamp}")
+        shared = [workdir]
+        dist.broadcast_object_list(shared, src=0)
+        workdir = Path(shared[0])
+        config.training.workdir = str(workdir)
+        workdir.mkdir(parents=True, exist_ok=True)
+        logger.configure(dir=str(workdir))
+        if rank == 0:
+            # Do not overwrite the original run's config when resuming.
+            name = f"config_resume_{checkpoint['step']:06d}.yaml" if resume_path else "config.yaml"
+            save_config(config, workdir / name)
+            if config.training.tracking_mode != "disabled":
+                import wandb
+                wandb.init(project="diffusion_bridge", name=config.training.experiment,
+                           config=to_dict(config), mode=config.training.tracking_mode)
+                tracking = True
+        model, diffusion = create_model_and_diffusion(config)
+        if checkpoint is not None:
+            model.load_state_dict(bridge_weights(checkpoint), strict=True)
+        model.to(dist_util.dev())
+        vae = load_vae(config=config.vae, device=dist_util.dev())
+        data = load_training_data(config, batch_size, world_size, rank)
+        loop = TrainLoop(model, diffusion, vae, data, config, workdir,
+                         resume=checkpoint if resume_path else None)
+        del checkpoint
+        loop.run_loop()
+    finally:
+        if tracking:
+            import wandb
+            wandb.finish()
+        dist.destroy_process_group()
 
 
 def create_argparser():
-    defaults = dict(
-        data_dir="/data/jianhua/nange/Dora/sharp_edge_sampling/sample",
-        dataset="edges2handbags",
-        schedule_sampler="real-uniform",
-        lr=1e-4,
-        weight_decay=0.0,
-        lr_anneal_steps=0,
-        global_batch_size=1,
-        batch_size=-1,
-        microbatch=-1,  # -1 disables microbatches
-        ema_rate="0.9999",  # comma-separated list of EMA values
-        log_interval=50,
-        test_interval=500000000,
-        save_interval=5000,
-        save_interval_for_preemption=5000,
-        resume_checkpoint="",
-        exp="",
-        use_fp16=True,
-        fp16_scale_growth=1e-3,
-        debug=False,
-        num_workers=8,
-        use_augment=False,
-        pretrained_ckpt=None,
-        train_mode="ddbm",
-    )
-    defaults.update(model_and_diffusion_defaults())
-    parser = argparse.ArgumentParser()
-    add_dict_to_argparser(parser, defaults)
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_config_arguments(parser)
+    sources = parser.add_mutually_exclusive_group()
+    sources.add_argument("--resume_checkpoint", help="Complete training state, or auto with --workdir")
+    sources.add_argument("--pretrained_ckpt", help="Initialize a new run from bridge weights")
+    default = load_config()
+    for name, key in CLI_MAP.items():
+        section, field = key.split(".")
+        value = default[section][field]
+        value_type = str2bool if isinstance(value, bool) else type(value)
+        parser.add_argument(f"--{name}", type=value_type, default=None, help=f"Override {key}")
     return parser
 
 
 if __name__ == "__main__":
-    args = create_argparser().parse_args()
-    main(args)
+    main(create_argparser().parse_args())

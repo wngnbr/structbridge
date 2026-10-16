@@ -1,0 +1,5 @@
+# Optional smoothing / simplification and historical API experiments only.
+open3d>=0.18
+requests>=2.31
+carvekit-colab>=4.1
+matplotlib>=3.7

@@ -1,5 +1,7 @@
-python watertight.py --input ./mesh.glb --output ./watered_mesh.obj
+#!/usr/bin/env bash
+set -euo pipefail
 
-python sharp.py --input ./watered_mesh.obj --output ./sharped_mesh.npz
-
-torchrun sample_single.py --npz_path ./sharped_mesh.npz
+# REFINE_PYTHON selects the refinement environment; it defaults to SHARP_PYTHON,
+# then the active Python. Inputs may be meshes or preprocessed NPZ files.
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+exec python "$script_dir/../sample_pipeline.py" "$@"

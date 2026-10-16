@@ -1,0 +1,9 @@
+# Common Python dependencies. Install the CUDA extensions separately against
+# the active PyTorch/CUDA versions; see README.md for the verified environment.
+numpy>=1.24,<2
+scipy>=1.10
+Pillow>=10
+trimesh>=4
+opencv-python>=4.9
+tqdm
+imageio>=2.31

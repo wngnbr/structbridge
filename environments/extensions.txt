@@ -1,0 +1,8 @@
+# Install after structbridge.yaml, with --no-build-isolation.
+--find-links https://data.pyg.org/whl/torch-2.6.0+cu124.html
+torch-cluster==1.6.3+pt26cu124
+torch-scatter==2.1.2+pt26cu124
+git+https://github.com/ashawkey/cubvh.git@8f0c777c2f9bd29b73931554d09269eed7023880
+diso==0.1.4
+git+https://github.com/NVlabs/nvdiffrast.git@253ac4fcea7de5f396371124af597e6cc957bfae
+https://download.blender.org/pypi/bpy/bpy-4.0.0-cp310-cp310-manylinux_2_28_x86_64.whl
